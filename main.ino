@@ -1,103 +1,255 @@
-/* Use a Piezo sensor (percussion / drum) to send USB MIDI note on
-   messages, where the "velocity" represents how hard the Piezo was
-   tapped.
+#include <ADC.h>
 
-   Connect a Pieze sensor to analog pin A0.  This example was tested
-   with Murata 7BB-27-4L0.  Almost any piezo sensor (not a buzzer with
-   built-in oscillator electronics) may be used.  However, Piezo
-   sensors are easily damaged by excessive heat if soldering.  It
-   is highly recommended to buy a Piezo with wires already attached!
-
-   Use a 100K resistor between A0 to GND, to give the sensor a "load".
-   The value of this resistor determines how "sensitive" the circuit is.
-
-   A pair of 1N4148 diodes are recommended to protect the analog pin.
-   The first diode connects to A0 with its stripe (cathode) and the other
-   side to GND.  The other diode connects its non-stripe (anode) side to
-   A0, and its stripe (cathode) side to 3.3V.
-
-   Sensitivity may also be tuned with the map() function.  Uncomment
-   the Serial.print lines to see the actual analog measurements in the
-   Arduino Serial Monitor.
-
-   You must select MIDI from the "Tools > USB Type" menu
-
-   This example code is in the public domain.
-*/
-
-const int channel = 10;  // General MIDI: channel 10 = percussion sounds
-const int note = 38;     // General MIDI: note 38 = acoustic snare
-
-const int analogPin = A0;
-const int thresholdMin = 60;  // minimum reading, avoid noise and false starts
-const int peakTrackMillis = 12;
-const int aftershockMillis = 25; // aftershocks & vibration reject
+// Select Tools > USB Type > MIDI + Serial
 
 
-void setup() {
-  Serial.begin(115200);
-  while (!Serial && millis() < 2500) /* wait for serial monitor */ ;
-  Serial.println("Piezo Peak Capture");
+// In a stready state, how strong does the signal need to be to fire?
+#define THRESHOLD_GATE 16
+// When debouncing, how muchn stronger does the signal need to be to fire?  We decrease
+// exponentially from here, dropping by 2x every DEBOUNCE_MS / DEBOUNCE_SECTIONS ms.
+#define INITIAL_EXTRA_GATE 512
+
+#define DEBOUNCE_MS 50
+#define BIAS_ESTIMATION_SAMPLES 0x10000
+
+#define DETECTION_WINDOW_MS 100
+
+#define DEBOUNCE_SECTIONS 8;
+
+#define BUFSIZE 4000
+
+#define N_PINS 10
+
+ADC adc;
+
+int val[N_PINS];
+int recent_max[N_PINS];
+int recent_min[N_PINS];
+int n;
+int bias_count;
+long bias_val[N_PINS];
+int cur_bias[N_PINS];
+bool calibrating;
+int buf[BUFSIZE*N_PINS];
+int loc;
+bool should_debug_print;
+int midi_note;
+int strongest_pin;
+unsigned long start_micros;
+float ms_per_sample;
+float samples_per_ms;
+int debounce_timer;
+int debounce_section_timer;
+int debounce_samples;
+int debounce_section_samples;
+int detection_window_samples;
+int effective_gate;
+int extra_gate;
+
+bool passed_gate;
+unsigned long gate_micros;
+int detection_window_loc;
+
+void setup()
+{   
+  Serial.begin(38400);
+
+  adc.adc0->setResolution(10);
+  adc.adc0->setAveraging(8);
+  adc.adc0->setConversionSpeed(ADC_CONVERSION_SPEED::VERY_HIGH_SPEED);
+  adc.adc0->setSamplingSpeed(ADC_SAMPLING_SPEED::VERY_HIGH_SPEED);
+  adc.adc0->setReference(ADC_REFERENCE::REF_3V3);
+  pinMode(A0, INPUT);
+  pinMode(A1, INPUT);
+  pinMode(A2, INPUT);
+  pinMode(A3, INPUT);
+  pinMode(A4, INPUT);
+  pinMode(A5, INPUT);
+  pinMode(A6, INPUT);
+  pinMode(A7, INPUT);
+  pinMode(A8, INPUT);
+  pinMode(A9, INPUT);
+
+  n = 0;
+  debounce_timer = 0;
+  debounce_section_timer = 0;
+  detection_window_loc = 0;
+  passed_gate = 0;
+  calibrating = true;
+  loc = 0;
+  bias_count = 0;
+  should_debug_print = false;
+  effective_gate = THRESHOLD_GATE;
+  extra_gate = 0;
+
+  for (int pin = 0 ; pin < N_PINS; pin++) {
+    bias_val[pin] = 0;
+    cur_bias[pin] = 512;
+    recent_min[pin] = 0;
+    recent_max[pin] = 0;
+    for (int i = 0; i < BUFSIZE; i++) {
+      buf[i + pin*BUFSIZE] = 0;
+    }
+  }
+
+  Serial.begin(38400);
 }
 
+void debug_print() {
+  if (!should_debug_print) {
+    return;
+  }
+  int window_end = BUFSIZE + BUFSIZE + loc;
+  int window_start = window_end - BUFSIZE;
+  //for (int pin = 0 ; pin < N_PINS; pin++) {
+    int pin = strongest_pin;
+    for (int i = window_start; i < window_end; i++) {
+      Serial.printf("%d ", buf[i % BUFSIZE + pin*BUFSIZE]);
+    }
+    Serial.println();
+  //}
+  should_debug_print = true;
+}
 
-void loop() {
-  int piezo = analogRead(analogPin);
-  peakDetect(piezo);
-  // Add other tasks to loop, but avoid using delay() or waiting.
-  // You need loop() to keep running rapidly to detect Piezo peaks!
+void loop()                     
+{
+  val[0] = adc.analogRead(A0, ADC_0);
+  val[1] = adc.analogRead(A1, ADC_0);
+  val[2] = adc.analogRead(A2, ADC_0);
+  val[3] = adc.analogRead(A3, ADC_0);
+  val[4] = adc.analogRead(A4, ADC_0);
+  val[5] = adc.analogRead(A5, ADC_0);
+  val[6] = adc.analogRead(A6, ADC_0);
+  val[7] = adc.analogRead(A7, ADC_0);
+  val[8] = adc.analogRead(A8, ADC_0);
+  val[9] = adc.analogRead(A9, ADC_0);
 
-  // MIDI Controllers should discard incoming MIDI messages.
-  // http://forum.pjrc.com/threads/24179-Teensy-3-Ableton-Analog-CC-causes-midi-crash
+  if (calibrating && bias_count == 0) {
+    start_micros = micros();
+  }
+
+  bias_count++;
+  for (int pin = 0 ; pin < N_PINS; pin++) {
+    bias_val[pin] += val[pin];
+  }
+
+  if (bias_count == BIAS_ESTIMATION_SAMPLES) {
+    for (int pin = 0 ; pin < N_PINS; pin++) {
+      cur_bias[pin] = bias_val[pin] / bias_count;
+      bias_val[pin] = 0;
+      if (calibrating) {
+        Serial.printf("pin %d bias %d\n", pin, cur_bias[pin]);
+      }
+    }
+
+    if (calibrating) {
+      unsigned long duration_micros = micros() - start_micros;
+      ms_per_sample = (1.0/1000) * duration_micros / bias_count;
+      samples_per_ms = 1000.0 * bias_count / duration_micros;
+
+      debounce_samples = DEBOUNCE_MS * samples_per_ms;
+      debounce_section_samples = debounce_samples / DEBOUNCE_SECTIONS;
+      detection_window_samples = DETECTION_WINDOW_MS * samples_per_ms;
+
+      Serial.printf("Calibrated with %d samples in %luus.  Sampling rate is %.0f Hz and each sample represents %.2fms\n",
+                    bias_count, duration_micros,
+                    1000 * samples_per_ms,
+                    ms_per_sample);
+      Serial.printf("Debounce %dms, %d samples\n", DEBOUNCE_MS, debounce_samples);
+      Serial.printf("Detection window %dms, %d samples\n", DETECTION_WINDOW_MS, detection_window_samples);
+      calibrating = false;
+    }
+    bias_count = 0;
+  }
+  if (calibrating) {
+    return;
+  }
+
+  for (int pin = 0 ; pin < N_PINS; pin++) {
+    val[pin] -= cur_bias[pin];
+    buf[loc % BUFSIZE + pin*BUFSIZE] = val[pin];
+  }
+  loc++;
+  if (loc == BUFSIZE) {
+    loc = 0;
+  }
+
+  bool threshold_passed = false;
+  for (int pin = 0 ; pin < N_PINS; pin++) {
+    if (val[pin] > effective_gate || val[pin] < -effective_gate) {
+      threshold_passed = true;
+    }
+  }
+
+  if (debounce_timer > 0) {
+    debounce_timer--;
+    debounce_section_timer--;
+
+    if (debounce_section_timer == 0) {
+      extra_gate = extra_gate / 2;
+      effective_gate = THRESHOLD_GATE + extra_gate;
+      debounce_section_timer = debounce_section_samples;
+    }
+
+    if (debounce_timer == 0 || threshold_passed) {
+      debounce_timer = 0;
+      usbMIDI.sendNoteOff(midi_note, 0, /*channel=*/ 1);
+      debug_print();
+    }
+  }
+  
+  if (passed_gate) {
+    detection_window_loc++;
+
+    for (int pin = 0 ; pin < N_PINS; pin++) {
+      if (val[pin] < recent_min[pin]) {
+        recent_min[pin] = val[pin];
+      }
+      if (val[pin] > recent_max[pin]) {
+        recent_max[pin] = val[pin];
+      }
+    }
+
+    if (detection_window_loc == detection_window_samples) {
+      strongest_pin = 0;
+      bool is_up = false;
+      int strength = 0;
+      for (int pin = 0 ; pin < N_PINS; pin++) {
+        if (-recent_min[pin] > strength) {
+          strength = -recent_min[pin];
+          is_up = false;
+          strongest_pin = pin;
+        }
+        if (recent_max[pin] > strength) {
+          strength = recent_max[pin];
+          is_up = true;
+          strongest_pin = pin;
+        }
+        recent_max[pin] = recent_min[pin] = 0;
+      }
+      //Serial.printf("%d %c %d %ld\n", strongest_pin, is_up ? '<' : '>', strength, micros() - gate_micros);
+      int midi_velocity = strength / 4;  // 0-511 to 0-127
+      if (midi_velocity > 127) {
+        midi_velocity = 127;
+      }
+      midi_note = 48 + strongest_pin * 2 - is_up;
+      usbMIDI.sendNoteOn(midi_note, midi_velocity, /*channel=*/ 1);
+
+      passed_gate = false;
+      detection_window_loc = 0;
+      debounce_timer = debounce_samples;
+      debounce_section_timer = debounce_section_samples;
+      extra_gate = INITIAL_EXTRA_GATE;
+      effective_gate = THRESHOLD_GATE + extra_gate;
+    }
+  } else if (threshold_passed) {
+    passed_gate = true;
+    gate_micros = micros();
+  }
+
   while (usbMIDI.read()) {
     // ignore incoming messages
   }
+
+  n++;
 }
-
-
-void peakDetect(int voltage) {
-  // "static" variables keep their numbers between each run of this function
-  static int state;  // 0=idle, 1=looking for peak, 2=ignore aftershocks
-  static int peak;   // remember the highest reading
-  static elapsedMillis msec; // timer to end states 1 and 2
-
-  switch (state) {
-    // IDLE state: wait for any reading is above threshold.  Do not set
-    // the threshold too low.  You don't want to be too sensitive to slight
-    // vibration.
-    case 0:
-      if (voltage > thresholdMin) {
-        //Serial.print("begin peak track ");
-        //Serial.println(voltage);
-        peak = voltage;
-        msec = 0;
-        state = 1;
-      }
-      return;
-
-    // Peak Tracking state: capture largest reading
-    case 1:
-      if (voltage > peak) {
-        peak = voltage;     
-      }
-      if (msec >= peakTrackMillis) {
-        //Serial.print("peak = ");
-        //Serial.println(peak);
-        int velocity = map(peak, thresholdMin, 1023, 1, 127);
-        usbMIDI.sendNoteOn(note, velocity, channel);
-        msec = 0;
-        state = 2;
-      }
-      return;
-
-    // Ignore Aftershock state: wait for things to be quiet again.
-    default:
-      if (voltage > thresholdMin) {
-        msec = 0; // keep resetting timer if above threshold
-      } else if (msec > aftershockMillis) {
-        usbMIDI.sendNoteOff(note, 0, channel);
-        state = 0; // go back to idle when
-      }
-  }
-}
-
