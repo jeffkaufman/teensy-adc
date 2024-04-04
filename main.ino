@@ -18,7 +18,7 @@
 
 #define BUFSIZE 4000
 
-#define N_PINS 10
+#define N_PINS 18
 
 ADC adc;
 
@@ -69,6 +69,14 @@ void setup()
   pinMode(A7, INPUT);
   pinMode(A8, INPUT);
   pinMode(A9, INPUT);
+  pinMode(A10, INPUT);
+  pinMode(A11, INPUT);
+  pinMode(A12, INPUT);
+  pinMode(A13, INPUT);
+  pinMode(A14, INPUT);
+  pinMode(A15, INPUT);
+  pinMode(A16, INPUT);
+  pinMode(A17, INPUT);
 
   n = 0;
   debounce_timer = 0;
@@ -123,6 +131,16 @@ void loop()
   val[7] = adc.analogRead(A7, ADC_0);
   val[8] = adc.analogRead(A8, ADC_0);
   val[9] = adc.analogRead(A9, ADC_0);
+  val[10] = adc.analogRead(A10, ADC_0);
+  val[11] = adc.analogRead(A11, ADC_0);
+  // Pins 26 27, 38, 39 are only on the second ADC https://forum.pjrc.com/index.php?threads/teensy-4-1-adc-channels.72373/
+  // All others except 24 and 25 (A10 and A11) can go to either.
+  val[12] = adc.analogRead(A12, ADC_1);
+  val[13] = adc.analogRead(A13, ADC_1);
+  val[14] = adc.analogRead(A14, ADC_1);
+  val[15] = adc.analogRead(A15, ADC_1);
+  val[16] = adc.analogRead(A16, ADC_0);
+  val[17] = adc.analogRead(A17, ADC_0);
 
   if (calibrating && bias_count == 0) {
     start_micros = micros();
