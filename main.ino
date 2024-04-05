@@ -9,6 +9,8 @@
 // exponentially from here, dropping by 2x every DEBOUNCE_MS / DEBOUNCE_SECTIONS ms.
 #define INITIAL_EXTRA_GATE 512
 
+#define BROAD_LEN_THRESHOLD_MS 48
+
 #define DEBOUNCE_MS 50
 #define BIAS_ESTIMATION_SAMPLES 0x10000
 
@@ -25,6 +27,10 @@ ADC adc;
 int val[N_PINS];
 int recent_max[N_PINS];
 int recent_min[N_PINS];
+int broad_dir[N_PINS];
+int broad_len[N_PINS];
+int max_broad_dir[N_PINS];
+int max_broad_len[N_PINS];
 int n;
 int bias_count;
 long bias_val[N_PINS];
@@ -43,6 +49,7 @@ int debounce_section_timer;
 int debounce_samples;
 int debounce_section_samples;
 int detection_window_samples;
+int broad_len_threshold_samples;
 int effective_gate;
 int extra_gate;
 
@@ -86,7 +93,7 @@ void setup()
   calibrating = true;
   loc = 0;
   bias_count = 0;
-  should_debug_print = false;
+  should_debug_print = true;
   effective_gate = THRESHOLD_GATE;
   extra_gate = 0;
 
@@ -95,6 +102,10 @@ void setup()
     cur_bias[pin] = 512;
     recent_min[pin] = 0;
     recent_max[pin] = 0;
+    broad_dir[pin] = 1;
+    broad_len[pin] = 0;
+    max_broad_dir[pin] = 1;
+    max_broad_len[pin] = 0;
     for (int i = 0; i < BUFSIZE; i++) {
       buf[i + pin*BUFSIZE] = 0;
     }
@@ -143,6 +154,7 @@ void loop()
   val[17] = adc.analogRead(A17, ADC_0);
 
   if (calibrating && bias_count == 0) {
+    Serial.printf("calibrating...\n");
     start_micros = micros();
   }
 
@@ -168,6 +180,7 @@ void loop()
       debounce_samples = DEBOUNCE_MS * samples_per_ms;
       debounce_section_samples = debounce_samples / DEBOUNCE_SECTIONS;
       detection_window_samples = DETECTION_WINDOW_MS * samples_per_ms;
+      broad_len_threshold_samples = BROAD_LEN_THRESHOLD_MS * samples_per_ms;
 
       Serial.printf("Calibrated with %d samples in %luus.  Sampling rate is %.0f Hz and each sample represents %.2fms\n",
                     bias_count, duration_micros,
@@ -226,6 +239,27 @@ void loop()
       if (val[pin] > recent_max[pin]) {
         recent_max[pin] = val[pin];
       }
+      if (val[pin] > THRESHOLD_GATE) {
+        if (broad_dir[pin] > 0) {
+          broad_len[pin]++;
+        } else {
+          broad_len[pin] = 0;
+          broad_dir[pin] = 1;
+        }
+      } else if (-val[pin] > THRESHOLD_GATE) {
+        if (broad_dir[pin] < 0) {
+          broad_len[pin]++;
+        } else {
+          broad_len[pin] = 0;
+          broad_dir[pin] = -1;
+        }
+      } else {
+        broad_len[pin] = 0;
+      }
+      if (broad_len[pin] > max_broad_len[pin]) {
+        max_broad_len[pin] = broad_len[pin];
+        max_broad_dir[pin] = broad_dir[pin];
+      }
     }
 
     if (detection_window_loc == detection_window_samples) {
@@ -233,17 +267,21 @@ void loop()
       bool is_up = false;
       int strength = 0;
       for (int pin = 0 ; pin < N_PINS; pin++) {
-        if (-recent_min[pin] > strength) {
-          strength = -recent_min[pin];
-          is_up = false;
-          strongest_pin = pin;
+        int pin_strength = recent_max[pin];
+        if (-recent_min[pin] > pin_strength) {
+          pin_strength = -recent_min[pin];
         }
-        if (recent_max[pin] > strength) {
-          strength = recent_max[pin];
-          is_up = true;
+        if (pin_strength > strength) {
+          strength = pin_strength;
           strongest_pin = pin;
+          if (max_broad_len[pin] > broad_len_threshold_samples) {
+            is_up = max_broad_dir[pin] > 0;
+          } else {
+            is_up = recent_max[pin] > -recent_min[pin];
+          }
         }
-        recent_max[pin] = recent_min[pin] = 0;
+        recent_max[pin] = recent_min[pin] = broad_len[pin] =
+           broad_dir[pin] = max_broad_len[pin] = max_broad_dir[pin] = 0;
       }
       //Serial.printf("%d %c %d %ld\n", strongest_pin, is_up ? '<' : '>', strength, micros() - gate_micros);
       int midi_velocity = strength / 4;  // 0-511 to 0-127
