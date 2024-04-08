@@ -93,7 +93,7 @@ void setup()
   calibrating = true;
   loc = 0;
   bias_count = 0;
-  should_debug_print = true;
+  should_debug_print = false;
   effective_gate = THRESHOLD_GATE;
   extra_gate = 0;
 
@@ -275,7 +275,7 @@ void loop()
           strength = pin_strength;
           strongest_pin = pin;
           if (max_broad_len[pin] > broad_len_threshold_samples) {
-            is_up = max_broad_dir[pin] > 0;
+            is_up = max_broad_dir[pin] < 0;
           } else {
             is_up = recent_max[pin] > -recent_min[pin];
           }
@@ -288,7 +288,7 @@ void loop()
       if (midi_velocity > 127) {
         midi_velocity = 127;
       }
-      midi_note = 48 + strongest_pin * 2 - is_up;
+      midi_note = 36 + strongest_pin * 2 - 1 + is_up;
       usbMIDI.sendNoteOn(midi_note, midi_velocity, /*channel=*/ 1);
 
       passed_gate = false;
