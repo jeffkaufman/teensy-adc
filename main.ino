@@ -22,27 +22,14 @@
 
 #define N_PINS 18
 
+#define DEBUG_PRINT_MS 1000
 
-/*
- 0: B1
- 1: B2
- 2: F1
- 3: C1
- 4: G2
- 5
- 6
- 7
- 8
- 9
- 10: D2
- 11: F2
- 12: G1
- 13: E2
- 14: A2
- 15: C2
- 16: A1
- 17: G0
-*/
+#define JUST_PRINT_RMS false
+
+#define DEBUG_PRINT false
+
+#define BISONORIC false
+
 
 ADC adc;
 
@@ -58,7 +45,7 @@ float correlations[N_PINS * N_PINS];
 int best_pin[N_PINS];
 int second_best_pin[N_PINS];
 
-int n;
+long n;
 int bias_count;
 long bias_val[N_PINS];
 int cur_bias[N_PINS];
@@ -79,6 +66,7 @@ int detection_window_samples;
 int broad_len_threshold_samples;
 int effective_gate;
 int extra_gate;
+int debug_print_samples;
 
 bool passed_gate;
 unsigned long gate_micros;
@@ -153,6 +141,10 @@ void setup()
 }
 
 void debug_print() {
+  if (!DEBUG_PRINT) {
+    return;
+  }
+
   debug_print_counter--;
   if (debug_print_counter == 0) {
     should_debug_print = true;
@@ -164,14 +156,80 @@ void debug_print() {
   int window_end = BUFSIZE + BUFSIZE + loc;
   int window_start = window_end - detection_window_samples - debounce_samples - 1000;
   for (int pin = 0 ; pin < N_PINS; pin++) {
-    //int pin = strongest_pin;
+    long s = 0;
+    for (int i = 0; i < BUFSIZE; i++) {
+      s += buf[i + pin*BUFSIZE];
+    }
+    s = s / BUFSIZE;
+
+
+#if JUST_PRINT_RMS
+    double square_sum = 0;
     for (int i = window_start; i < window_end; i++) {
-      Serial.printf("%d ", buf[i % BUFSIZE + pin*BUFSIZE]);
+      int v = buf[i % BUFSIZE + pin*BUFSIZE] - s;
+      square_sum += v*v;
+    }
+    Serial.printf("%.0lf\t", sqrt(square_sum));
+#else
+    for (int i = window_start; i < window_end; i++) {
+      int v = buf[i % BUFSIZE + pin*BUFSIZE] - s;
+      Serial.printf("%d ", v);
     }
     Serial.println();
+#endif
   }
   Serial.println();
   //should_debug_print = false;
+}
+
+int determine_midi_note(int strongest_pin, bool is_up) {
+  int midi_out = 0;
+  switch(strongest_pin) {
+    case 2:
+      midi_out = 31; // G1
+      break;
+    case 16:
+      midi_out = 36; // C2
+      break;
+    case 12:
+      midi_out = 41; // F2
+      break;
+    case 10:
+      midi_out = 43; // G2
+      break;
+    case 1:
+      midi_out = 45; // A2
+      break;
+    case 4:
+      midi_out = 47; // B2
+      break;
+    case 13:
+      midi_out = 48; // C3
+      break;
+    case 17:
+      midi_out = 50; // D3
+      break;
+    case 15:
+      midi_out = 52; // E3
+      break;
+    case 3:
+      midi_out = 53; // F3
+      break;
+    case 11:
+      midi_out = 55; // G3
+      break;
+    case 14:
+      midi_out = 57; // A3
+      break;
+    case 0:
+      midi_out = 59; // B3
+      break;
+  }
+  if (is_up && BISONORIC) {
+    midi_out -= 1;
+  }
+
+  return midi_out;
 }
 
 void loop()                     
@@ -219,7 +277,7 @@ void loop()
       }
     }
 
-    Serial.printf("correlations:\n");
+    //Serial.printf("correlations:\n");
     for (int pin = 0 ; pin < N_PINS; pin++) {
       best_pin[pin] = -1;
       for (int pin2 = 0 ; pin2 < N_PINS; pin2++) {
@@ -237,12 +295,12 @@ void loop()
           second_best_pin[pin] = pin2;
         }
       }
-      Serial.printf("%d: %d %d (%.0f)   ", pin, best_pin[pin], second_best_pin[pin], correlations[pin + best_pin[pin]*N_PINS] + correlations[pin + second_best_pin[pin]*N_PINS]);
-      for (int pin2 = 0 ; pin2 < N_PINS; pin2++) {
-        Serial.printf("%.0f ", correlations[pin + pin2*N_PINS]);
-        correlations[pin + pin2*N_PINS] = 0;
-      }
-      Serial.printf("\n");
+      //Serial.printf("%d: %d %d (%.0f)   ", pin, best_pin[pin], second_best_pin[pin], correlations[pin + best_pin[pin]*N_PINS] + correlations[pin + second_best_pin[pin]*N_PINS]);
+      //for (int pin2 = 0 ; pin2 < N_PINS; pin2++) {
+      //  Serial.printf("%.0f ", correlations[pin + pin2*N_PINS]);
+      //  correlations[pin + pin2*N_PINS] = 0;
+      //}
+      //Serial.printf("\n");
     }
 
     if (calibrating) {
@@ -255,6 +313,7 @@ void loop()
       debounce_section_samples = debounce_samples / DEBOUNCE_SECTIONS;
       detection_window_samples = DETECTION_WINDOW_MS * samples_per_ms;
       broad_len_threshold_samples = BROAD_LEN_THRESHOLD_MS * samples_per_ms;
+      debug_print_samples = DEBUG_PRINT_MS * samples_per_ms;
 
       Serial.printf("Calibrated with %d samples in %luus.  Sampling rate is %.0f Hz and each sample represents %.2fms\n",
                     bias_count, duration_micros,
@@ -277,16 +336,25 @@ void loop()
   bias /= N_PINS;
   
   for (int pin = 0 ; pin < N_PINS; pin++) {
-    //val[pin] = raw_val[pin] - cur_bias[pin];
-    val[pin] = raw_val[pin] - bias;
+    val[pin] = raw_val[pin] - cur_bias[pin];
+    //val[pin] = raw_val[pin] - bias;
 
     //val[pin] = raw_val[pin] - (raw_val[best_pin[pin]] + raw_val[second_best_pin[pin]])/2;
-    buf[loc % BUFSIZE + pin*BUFSIZE] = val[pin];
+    //val[pin] = raw_val[pin];
+    buf[loc % BUFSIZE + pin*BUFSIZE] = raw_val[pin];
   }
   loc++;
   if (loc == BUFSIZE) {
     loc = 0;
   }
+
+#if JUST_PRINT_RMS
+  if (n % debug_print_samples == debug_print_samples / 2) {
+    debug_print();
+  }
+  n++;
+  return;
+#endif
 
   bool threshold_passed = false;
   for (int pin = 0 ; pin < N_PINS; pin++) {
@@ -356,9 +424,9 @@ void loop()
           strength = pin_strength;
           strongest_pin = pin;
           if (max_broad_len[pin] > broad_len_threshold_samples) {
-            is_up = max_broad_dir[pin] < 0;
+            is_up = max_broad_dir[pin] > 0;
           } else {
-            is_up = recent_max[pin] > -recent_min[pin];
+            is_up = recent_max[pin] < -recent_min[pin];
           }
         }
       }
@@ -382,7 +450,7 @@ void loop()
         if (midi_velocity > 127) {
           midi_velocity = 127;
         }
-        midi_note = 36 + strongest_pin * 2 - 1 + is_up;
+        midi_note = determine_midi_note(strongest_pin, is_up);
         usbMIDI.sendNoteOn(midi_note, midi_velocity, /*channel=*/ 1);
         debounce_timer = debounce_samples;
         debounce_section_timer = debounce_section_samples;
