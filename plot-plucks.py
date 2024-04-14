@@ -15,10 +15,10 @@ def import_data(fname, is_up):
         for line in inf:
             plucks[is_up].append([int(x) for x in line.strip().split(" ")])
 
-for fname in glob.glob("plucks/up*.txt"):
+for fname in glob.glob("plucks/up3.txt"):
     import_data(fname, True)
 
-for fname in glob.glob("plucks/down*.txt"):
+for fname in glob.glob("plucks/down6.txt"):
     import_data(fname, False)
 
 def classify(ys):
@@ -71,30 +71,37 @@ def peak_only(ys):
     
 for is_up in [True, False]:
     data = plucks[is_up]
-    ncols = 6
-    nrows = nrows = math.ceil(len(data) / ncols)
-    fig, _ = plt.subplots(constrained_layout=True,
-                          sharex=True,
-                          sharey=True,
-                          figsize=(1*ncols, 1*nrows),
-                          nrows=nrows,
-                          ncols=ncols)
+
     scored_data = [
         #(sum(y*y for y in ys), ys)
         (max(max(ys), -min(ys)), ys)
         for ys in data]
+
+    scored_data = [(score, ys)
+                   for (score, ys) in scored_data
+                   if score > 50 and
+                   abs(ys[0]) < 16]
     scored_data.sort()
+
+    ncols = 6
+    nrows = nrows = math.ceil(len(scored_data) / ncols)
+    fig, _ = plt.subplots(constrained_layout=True,
+                          sharex=True,
+                          sharey=True,
+                          figsize=(2*ncols, 2*nrows),
+                          nrows=nrows,
+                          ncols=ncols)
     
     for ax, (score, ys) in zip(fig.axes, scored_data):
         label = classify(ys)
         xs = list(range(len(ys)))
         ax.plot(xs, ys)
-        ax.set_title(label)
+        #ax.set_title(score)
 
     fig.suptitle("%sstrokes" % (
         "Up" if is_up else "Down"))
+    plt.xticks([]);
+    plt.yticks([]);
 
     fig.savefig("%s-plucks.png" % ("up" if is_up else "down"), dpi=180)
     plt.clf()
-
-        
