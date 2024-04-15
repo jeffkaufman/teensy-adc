@@ -42,8 +42,6 @@ int broad_len[N_PINS];
 int max_broad_dir[N_PINS];
 int max_broad_len[N_PINS];
 float correlations[N_PINS * N_PINS];
-int best_pin[N_PINS];
-int second_best_pin[N_PINS];
 
 long n;
 int bias_count;
@@ -132,8 +130,6 @@ void setup()
     for (int i = 0; i < BUFSIZE; i++) {
       buf[i + pin*BUFSIZE] = 0;
     }
-    best_pin[pin] = 0;
-    second_best_pin[pin] = 0;
   }
 
   Serial.begin(38400);
@@ -270,32 +266,6 @@ void loop()
       }
     }
 
-    //Serial.printf("correlations:\n");
-    for (int pin = 0 ; pin < N_PINS; pin++) {
-      best_pin[pin] = -1;
-      for (int pin2 = 0 ; pin2 < N_PINS; pin2++) {
-        if (pin2 != best_pin[pin] && pin2 != pin && (
-          best_pin[pin] == -1 ||
-          correlations[pin + pin2*N_PINS] < correlations[pin + best_pin[pin]*N_PINS])) {
-          best_pin[pin] = pin2;
-        }
-      }
-      second_best_pin[pin] = -1;
-      for (int pin2 = 0 ; pin2 < N_PINS; pin2++) {
-        if (pin2 != second_best_pin[pin] && pin2 != best_pin[pin] && pin2 != pin && (
-          second_best_pin[pin] == -1 ||
-          correlations[pin + pin2*N_PINS] < correlations[pin + second_best_pin[pin]*N_PINS])) {
-          second_best_pin[pin] = pin2;
-        }
-      }
-      //Serial.printf("%d: %d %d (%.0f)   ", pin, best_pin[pin], second_best_pin[pin], correlations[pin + best_pin[pin]*N_PINS] + correlations[pin + second_best_pin[pin]*N_PINS]);
-      //for (int pin2 = 0 ; pin2 < N_PINS; pin2++) {
-      //  Serial.printf("%.0f ", correlations[pin + pin2*N_PINS]);
-      //  correlations[pin + pin2*N_PINS] = 0;
-      //}
-      //Serial.printf("\n");
-    }
-
     if (calibrating) {
 
       unsigned long duration_micros = micros() - start_micros;
@@ -332,7 +302,6 @@ void loop()
     val[pin] = raw_val[pin] - cur_bias[pin];
     //val[pin] = raw_val[pin] - bias;
 
-    //val[pin] = raw_val[pin] - (raw_val[best_pin[pin]] + raw_val[second_best_pin[pin]])/2;
     //val[pin] = raw_val[pin];
     buf[loc % BUFSIZE + pin*BUFSIZE] = val[pin];
   }
@@ -368,7 +337,7 @@ void loop()
 
     if (debounce_timer == 0) {
       usbMIDI.sendNoteOff(midi_note, 0, /*channel=*/ 1);
-      debug_print();
+      //debug_print();
     }
   }
   
@@ -444,12 +413,14 @@ void loop()
           midi_velocity = 127;
         }
         midi_note = determine_midi_note(strongest_pin, is_up);
+        /*
         for (int pin = 0; pin < N_PINS; pin++) {
           for (int i = 0 ; i < 100; i++) {
             buf[(loc+i) % BUFSIZE + pin*BUFSIZE] = 500;
           }
-        }
+        }*/
         usbMIDI.sendNoteOn(midi_note, midi_velocity, /*channel=*/ 1);
+        debug_print();
         debounce_timer = debounce_samples;
         debounce_section_timer = debounce_section_samples;
         extra_gate = INITIAL_EXTRA_GATE;
