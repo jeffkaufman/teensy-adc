@@ -14,7 +14,7 @@
 #define DEBOUNCE_MS 50
 #define BIAS_ESTIMATION_SAMPLES 0x10000
 
-#define DETECTION_WINDOW_MS 100
+#define DETECTION_WINDOW_MS 65
 
 #define DEBOUNCE_SECTIONS 8;
 
@@ -26,9 +26,9 @@
 
 #define JUST_PRINT_RMS false
 
-#define DEBUG_PRINT false
+#define DEBUG_PRINT true
 
-#define BISONORIC false
+#define BISONORIC true
 
 
 ADC adc;
@@ -156,23 +156,16 @@ void debug_print() {
   int window_end = BUFSIZE + BUFSIZE + loc;
   int window_start = window_end - detection_window_samples - debounce_samples - 1000;
   for (int pin = 0 ; pin < N_PINS; pin++) {
-    long s = 0;
-    for (int i = 0; i < BUFSIZE; i++) {
-      s += buf[i + pin*BUFSIZE];
-    }
-    s = s / BUFSIZE;
-
-
 #if JUST_PRINT_RMS
     double square_sum = 0;
     for (int i = window_start; i < window_end; i++) {
-      int v = buf[i % BUFSIZE + pin*BUFSIZE] - s;
+      int v = buf[i % BUFSIZE + pin*BUFSIZE];
       square_sum += v*v;
     }
     Serial.printf("%.0lf\t", sqrt(square_sum));
 #else
     for (int i = window_start; i < window_end; i++) {
-      int v = buf[i % BUFSIZE + pin*BUFSIZE] - s;
+      int v = buf[i % BUFSIZE + pin*BUFSIZE];
       Serial.printf("%d ", v);
     }
     Serial.println();
@@ -222,7 +215,7 @@ int determine_midi_note(int strongest_pin, bool is_up) {
       midi_out = 57; // A3
       break;
     case 0:
-      midi_out = 59; // B3
+      midi_out = 60; // C4
       break;
   }
   if (is_up && BISONORIC) {
@@ -341,7 +334,7 @@ void loop()
 
     //val[pin] = raw_val[pin] - (raw_val[best_pin[pin]] + raw_val[second_best_pin[pin]])/2;
     //val[pin] = raw_val[pin];
-    buf[loc % BUFSIZE + pin*BUFSIZE] = raw_val[pin];
+    buf[loc % BUFSIZE + pin*BUFSIZE] = val[pin];
   }
   loc++;
   if (loc == BUFSIZE) {
@@ -451,6 +444,11 @@ void loop()
           midi_velocity = 127;
         }
         midi_note = determine_midi_note(strongest_pin, is_up);
+        for (int pin = 0; pin < N_PINS; pin++) {
+          for (int i = 0 ; i < 100; i++) {
+            buf[(loc+i) % BUFSIZE + pin*BUFSIZE] = 500;
+          }
+        }
         usbMIDI.sendNoteOn(midi_note, midi_velocity, /*channel=*/ 1);
         debounce_timer = debounce_samples;
         debounce_section_timer = debounce_section_samples;
