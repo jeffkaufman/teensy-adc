@@ -6,8 +6,13 @@
 // In a stready state, how strong does the signal need to be to fire?
 #define THRESHOLD_GATE 8
 
-#define DETECTION_WINDOW_MS 50
-#define DEBOUNCE_MS 50
+// How much stronger than the steady state gate do we need to trigger an immediate repeat?
+#define THRESHOLD_REPEAT 128
+
+#define DETECTION_WINDOW_MS 65
+#define DEBOUNCE_PERIOD_MS 50
+#define DEBOUNCE_PERIODS 5
+#define NOTE_DURATION_MS 100
 
 #define BIAS_ESTIMATION_SAMPLES 0x10000
 
@@ -32,9 +37,13 @@ float ms_per_sample;
 float samples_per_ms;
 
 int debounce_samples;
+int note_duration_samples;
 int detection_window_samples;
-int debounce_samples_remaining[N_PINS];
+int debounce_periods_remaining[N_PINS];
+int debounce_period_samples_remaining[N_PINS];
 int detection_window_remaining[N_PINS];
+int note_duration_samples_remaining[N_PINS];
+int extra_gate[N_PINS];
 
 void setup() {
   Serial.begin(38400);
@@ -71,6 +80,11 @@ void setup() {
     cur_bias[pin] = 512;
     recent_rms[pin] = 0;
     midi_notes[pin] = 60;
+    debounce_periods_remaining[pin] = 0;
+    debounce_period_samples_remaining[pin] = 0;
+    detection_window_remaining[pin] = 0;
+    extra_gate[pin] = 0;
+    note_duration_samples_remaining[pin] = 0;
   }
 
   Serial.begin(38400);
@@ -179,7 +193,7 @@ int determine_midi_note(int strongest_pin) {
 #endif
   }
 
-  return midi_out + 2;  // pitch it in D
+  return midi_out + 2 + 12;  // pitch it in D
 }
 
 void loop() {
@@ -229,14 +243,15 @@ void loop() {
       ms_per_sample = (1.0 / 1000) * duration_micros / bias_count;
       samples_per_ms = 1000.0 * bias_count / duration_micros;
 
-      debounce_samples = DEBOUNCE_MS * samples_per_ms;
+      debounce_samples = DEBOUNCE_PERIOD_MS * samples_per_ms;
       detection_window_samples = DETECTION_WINDOW_MS * samples_per_ms;
+      note_duration_samples = NOTE_DURATION_MS * samples_per_ms;
 
       Serial.printf("Calibrated with %d samples in %luus.  Sampling rate is %.0f Hz and each sample represents %.2fms\n",
                     bias_count, duration_micros,
                     1000 * samples_per_ms,
                     ms_per_sample);
-      Serial.printf("Debounce %dms, %d samples\n", DEBOUNCE_MS, debounce_samples);
+      Serial.printf("Debounce %dms x %d, %d samples x %d\n", DEBOUNCE_PERIOD_MS, DEBOUNCE_PERIODS, debounce_samples, DEBOUNCE_PERIODS);
       Serial.printf("Detection window %dms, %d samples\n", DETECTION_WINDOW_MS, detection_window_samples);
       calibrating = false;
     }
@@ -257,9 +272,17 @@ void loop() {
   }
 
   for (int pin = 0; pin < N_PINS; pin++) {
+    if (note_duration_samples_remaining[pin] > 0) {
+      note_duration_samples_remaining[pin]--;
+      if (note_duration_samples_remaining[pin] == 0) {
+        usbMIDI.sendNoteOff(midi_notes[pin], 0, /*channel=*/1);
+      }
+    }
+
+    int threshold = THRESHOLD_GATE + extra_gate[pin];
     if (detection_window_remaining[pin] == 0 &&
-        debounce_samples_remaining[pin] == 0 &&
-        (val[pin] > THRESHOLD_GATE || -val[pin] > THRESHOLD_GATE)) {
+        debounce_periods_remaining[pin] < DEBOUNCE_PERIODS &&
+        (val[pin] > threshold || -val[pin] > threshold)) {
       detection_window_remaining[pin] = detection_window_samples;
       recent_rms[pin] = 0;
     }
@@ -276,13 +299,20 @@ void loop() {
         int midi_note = determine_midi_note(pin);
         Serial.printf("%d %d %d %.1f\n", pin, midi_note, midi_velocity, recent_rms[pin] / detection_window_samples);
         usbMIDI.sendNoteOn(midi_note, midi_velocity, /*channel=*/1);
+        note_duration_samples_remaining[pin] = note_duration_samples;
         midi_notes[pin] = midi_note;
-        debounce_samples_remaining[pin] = debounce_samples;
+        debounce_period_samples_remaining[pin] = debounce_samples;
+        debounce_periods_remaining[pin] = DEBOUNCE_PERIODS;
+        extra_gate[pin] = THRESHOLD_REPEAT;
       }
-    } else if (debounce_samples_remaining[pin] > 0) {
-      debounce_samples_remaining[pin]--;
-      if (debounce_samples_remaining[pin] == 0) {
-        usbMIDI.sendNoteOff(midi_notes[pin], 0, /*channel=*/1);
+    } else if (debounce_period_samples_remaining[pin] > 0) {
+      debounce_period_samples_remaining[pin]--;
+      if (debounce_period_samples_remaining[pin] == 0) {
+        extra_gate[pin] = extra_gate[pin] / 2;
+        if (debounce_periods_remaining[pin] > 0) {
+          debounce_periods_remaining[pin]--;
+          debounce_period_samples_remaining[pin] = debounce_samples;
+        }
       }
     }
   }
