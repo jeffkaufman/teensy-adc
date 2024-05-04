@@ -4,7 +4,7 @@
 
 
 // In a stready state, how strong does the signal need to be to fire?
-#define THRESHOLD_GATE 24
+#define THRESHOLD_GATE 8
 
 #define DETECTION_WINDOW_MS 50
 #define DEBOUNCE_MS 50
@@ -257,7 +257,9 @@ void loop() {
   }
 
   for (int pin = 0; pin < N_PINS; pin++) {
-    if (detection_window_remaining[pin] == 0 && (val[pin] > THRESHOLD_GATE || -val[pin] > THRESHOLD_GATE)) {
+    if (detection_window_remaining[pin] == 0 &&
+        debounce_samples_remaining[pin] == 0 &&
+        (val[pin] > THRESHOLD_GATE || -val[pin] > THRESHOLD_GATE)) {
       detection_window_remaining[pin] = detection_window_samples;
       recent_rms[pin] = 0;
     }
